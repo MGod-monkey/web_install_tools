@@ -12,7 +12,7 @@ chmod +x RobotWebInstaller-0.3.0-x86_64.AppImage
 1. 填写机器人 IP、用户名、密码，选择系统代次。默认 IP 为 `192.168.121.1`，账号和密码均为 `langyi`。
 2. 默认 SSH 端口 22；高级连接选项可填写其他端口与独立 sudo 密码。
 3. 在 NAS 目录树选中 DEB，或在路径栏输入完整 DEB 路径并按回车。输入目录路径可展开目录，例如 `/web_deb/第一代系统/temp/`。本地 DEB 可拖入窗口，也可点击拖拽区选择。
-4. 点击“一键部署”，选中的 NAS 包会按需下载并校验。首次连接时核实机器人的 SSH 指纹，信任后保存；已保存的主机身份变化时拒绝连接。
+4. 点击“一键部署”，选中的 NAS 包会按需下载并上传到机器人，由机器人读取和安装。首次连接时核实机器人的 SSH 指纹，信任后保存；已保存的主机身份变化时拒绝连接。
 5. 等待结果。支持部署记录、日志导出和断连后恢复查询。
 
 | 系统 | 目标服务 |
@@ -82,10 +82,10 @@ NAS 配置固定在内部，没有前端设置入口。采用已验证的绿联 
 
 ## 执行流程
 
-1. 检查 Ubuntu 版本、CPU 架构、磁盘空间、sudo 权限，阻止降级。
+1. 检查机器人的 Ubuntu 版本、上传所需空间和 sudo 权限。电脑端只读取文件及传输所需信息。
 2. SFTP 上传到独立临时目录，校验两端 SHA-256。
 3. 复制到 root 管理的任务目录，通过 systemd 临时服务启动任务。
-4. 用 `flock` 保证部署互斥，检查 DPKG 状态，记录原版本和服务状态，备份包管理器声明的 `/etc` 配置。
+4. 在机器人端读取 DEB 信息，检查架构、可用空间和 DPKG 状态，并阻止降级。用 `flock` 保证部署互斥，记录原版本和服务状态，备份包管理器声明的 `/etc` 配置。
 5. APT 模拟安装；通过后实际安装，禁止删除其他包并保留已有配置。
 6. `daemon-reload`、`enable`、`restart`，检查连续 10 秒运行状态及开机自启状态。
 7. 保存任务状态与日志，分别报告安装失败和服务失败，服务失败时收集 journal 日志。
@@ -150,6 +150,16 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 ROBOT_TERMINAL_TESTS=1 .venv/bin/python -m pyte
 ```
 
 ## 构建
+
+在 Ubuntu 上构建 Windows EXE 和 Linux AppImage，需要 Docker、Python 3、Git 和已登录的 GitHub CLI。提交要构建的代码和 Windows 工作流后，在仓库根目录运行以下命令。
+
+```bash
+./build.sh -v 0.3.1
+```
+
+脚本从当前提交建立独立构建目录，设置版本号并单独推送 `v0.3.1` 标签。GitHub Actions 构建并测试 Windows EXE，然后建立 Releases 草稿。本机用 Docker 构建并测试同一标签的 AppImage，保存到 `dist/v0.3.1/`，再上传到该草稿。再次运行同一版本会使用已有标签，补齐缺少的附件。
+
+单独在本机打包 Linux AppImage 时，可运行以下命令。
 
 ```bash
 bash scripts/build_in_docker.sh

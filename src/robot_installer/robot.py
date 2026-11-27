@@ -11,7 +11,7 @@ import uuid
 import paramiko
 
 from .config import RobotConfig, state_dir
-from .packages import sha256
+from .packages import DebPackage, sha256
 from .storage import History
 
 
@@ -80,7 +80,6 @@ class RobotInfo:
     ubuntu: str
     architecture: str
     available_bytes: int
-    installed_version: str
     service_state: str
 
 
@@ -237,7 +236,7 @@ class RobotClient:
             raise RuntimeError((error or output or f"远程命令失败：{code}")[-4000:])
         return code, output, error
 
-    def inspect(self, package=None):
+    def inspect(self):
         command = (
             '. /etc/os-release; printf \'%s %s\\n\' "$ID" "$VERSION_ID"; '
             "dpkg --print-architecture; df -PB1 /var /tmp | awk 'NR>1 {print $4}'"
@@ -246,31 +245,7 @@ class RobotClient:
         lines = text.strip().splitlines()
         if len(lines) != 4 or lines[0] not in ("ubuntu 20.04", "ubuntu 22.04", "ubuntu 24.04"):
             raise RuntimeError("机器人必须运行 Ubuntu 20.04、22.04 或 24.04")
-        if package:
-            package.require_architecture(lines[1])
-            required = max(package.size * 3 + package.installed_kib * 1024, 256 * 1024**2)
-            if min(int(lines[2]), int(lines[3])) < required:
-                raise RuntimeError("机器人 /var 或 /tmp 剩余空间不足")
         self.run("true", sudo=True)
-        installed = "未检测"
-        if package:
-            _, installed, _ = self.run(
-                "dpkg-query -W -f='${Version}' " + shlex.quote(package.name),
-                check=False,
-            )
-            installed = installed.strip() or "未安装"
-            if installed != "未安装":
-                code, _, _ = self.run(
-                    "dpkg --compare-versions "
-                    + shlex.quote(package.version)
-                    + " lt "
-                    + shlex.quote(installed),
-                    check=False,
-                )
-                if code == 0:
-                    raise RuntimeError(
-                        f"所选版本 {package.version} 低于已装版本 {installed}，请使用正式升级包"
-                    )
         _, service_state, _ = self.run(
             "systemctl is-active " + shlex.quote(self.config.service),
             check=False,
@@ -279,15 +254,20 @@ class RobotClient:
             lines[0],
             lines[1],
             min(int(lines[2]), int(lines[3])),
-            installed,
             service_state.strip() or "unknown",
         )
 
     def deploy(self, package, log, progress):
         log("正在检查机器人环境及 sudo 权限…")
-        self.inspect(package)
-        if sha256(package.path) != package.digest:
+        info = self.inspect()
+        if DebPackage.from_path(package.path) != package:
             raise RuntimeError("本地安装包在选择后发生变化，请重新选择")
+        if info.available_bytes < max(package.size * 3, 256 * 1024**2):
+            raise RuntimeError("机器人 /var 或 /tmp 剩余空间不足")
+        try:
+            digest = sha256(package.path)
+        except OSError as exc:
+            raise ValueError(f"无法读取本地文件：{package.path.name}") from exc
         task_id = uuid.uuid4().hex
         history = History()
         history.create(task_id, self.config, package)
@@ -307,9 +287,9 @@ class RobotClient:
                 )
                 script = files("robot_installer").joinpath("remote/install.sh").read_bytes()
                 with sftp.open(stage_path + "/install.sh", "wb") as target:
-                    target.write(script)
+                    target.write(script.replace(b"\r\n", b"\n"))
             _, output, _ = self.run("sha256sum -- " + shlex.quote(stage_path + "/package.deb"), timeout=120)
-            if output.split()[0] != package.digest:
+            if output.split()[:1] != [digest]:
                 raise RuntimeError("机器人上的文件校验失败，未执行安装")
             log("文件校验通过，启动远程部署任务：" + task_id)
             command = (
@@ -332,9 +312,7 @@ class RobotClient:
                         root + "/install.sh",
                         root,
                         self.config.service,
-                        package.digest,
-                        package.name,
-                        package.version,
+                        digest,
                     )
                 )
             )
@@ -369,6 +347,16 @@ class RobotClient:
                 text = text.replace(secret, "***")
         return text
 
+    def record_package_metadata(self, sftp, root, history, task_id):
+        try:
+            with sftp.open(root + "/metadata", "rb") as remote:
+                data = remote.read(4096).decode("utf-8", errors="replace")
+        except (OSError, paramiko.SSHException):
+            return
+        fields = dict(line.split("=", 1) for line in data.splitlines() if "=" in line)
+        if fields.get("package") and fields.get("version"):
+            history.set_package(task_id, fields["package"], fields["version"])
+
     def monitor(self, task_id, log, progress, timeout=1800):
         if len(task_id) != 32 or any(c not in "0123456789abcdef" for c in task_id):
             raise ValueError("任务编号无效")
@@ -395,6 +383,8 @@ class RobotClient:
                     time.sleep(1)
                     continue
                 missing_since = time.monotonic()
+                if status == "succeeded" or status.startswith("failed:"):
+                    self.record_package_metadata(sftp, root, history, task_id)
                 if status == "succeeded":
                     history.update(task_id, "成功", "服务已自启并持续运行 10 秒")
                     progress(100)

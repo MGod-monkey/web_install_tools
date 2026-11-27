@@ -1,0 +1,106 @@
+name: Windows release build
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and test Windows x64
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+          architecture: x64
+      - name: Install build dependencies
+        run: python -m pip install '.[dev]'
+      - name: Check client file handling
+        run: |
+          @'
+          from pathlib import Path
+          from tempfile import TemporaryDirectory
+
+          from robot_installer.packages import DebPackage
+
+          with TemporaryDirectory() as directory:
+              path = Path(directory) / "sample.deb"
+              payload = b"opaque bytes for transfer"
+              path.write_bytes(payload)
+              package = DebPackage.from_path(path)
+              assert package.path == path
+              assert package.size == len(payload)
+          '@ | python -
+      - name: Build standalone EXE
+        run: |
+          $version = python -c "from robot_installer import __version__; print(__version__)"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ("v$version" -ne $env:GITHUB_REF_NAME) { throw "The Git tag must match the application version." }
+          $name = "RobotWebInstaller-$version-windows-x64"
+          python scripts/collect_licenses.py build/windows-licenses
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --paths src --collect-all robot_installer --add-data "build/windows-licenses:licenses" --name $name run.py
+      - name: Test the frozen GUI and write SHA-256
+        run: |
+          $name = "RobotWebInstaller-$($env:GITHUB_REF_NAME.Substring(1))-windows-x64.exe"
+          $exe = (Resolve-Path "dist/$name").Path
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $env:XDG_STATE_HOME = Join-Path $env:RUNNER_TEMP "robot-installer-state"
+          $env:XDG_CACHE_HOME = Join-Path $env:RUNNER_TEMP "robot-installer-cache"
+          $process = Start-Process -FilePath $exe -ArgumentList "--smoke-test", "--snapshot", "windows-smoke.png" -PassThru
+          if (-not $process.WaitForExit(120000)) {
+            taskkill /PID $process.Id /T /F
+            throw "The packaged GUI did not exit within two minutes."
+          }
+          if ($process.ExitCode -ne 0 -or -not (Test-Path windows-smoke.png)) {
+            throw "The packaged GUI failed its smoke test (exit $($process.ExitCode))."
+          }
+          $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -LiteralPath "$exe.sha256" -Value "$hash  $name" -Encoding ascii
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-x64
+          path: |
+            dist/*.exe
+            dist/*.exe.sha256
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-smoke-snapshot
+          path: windows-smoke.png
+          if-no-files-found: error
+
+  release:
+    name: Attach files to a draft release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: windows-x64
+          path: release-assets
+      - name: Verify and attach the Windows build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd release-assets
+          sha256sum -c -- *.exe.sha256
+          cat > "$RUNNER_TEMP/windows-release-notes.md" <<'NOTES'
+          Windows x64 便携 EXE 由 GitHub Actions 构建，Linux AppImage 由本地构建脚本上传。两份产物各附 SHA-256 校验文件。
+
+          GitHub Actions 已验证 EXE 启动和界面加载。客户端以普通文件上传 DEB，包信息由机器人在部署时读取。
+          NOTES
+          gh release create "$GITHUB_REF_NAME" *.exe *.exe.sha256 \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
+            --title "Robot Web Installer ${GITHUB_REF_NAME#v}" \
+            --notes-file "$RUNNER_TEMP/windows-release-notes.md"

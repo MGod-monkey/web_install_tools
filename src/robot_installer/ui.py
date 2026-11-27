@@ -443,11 +443,7 @@ class MainWindow(QMainWindow):
         self.package_label.setText(f"已选择 {name}" if name else "尚未选择安装包")
         details = escape(name) if name else ""
         if self.package is not None:
-            package = self.package
-            metadata = escape(
-                f"{package.name} · {package.version} · {package.architecture} · {size_text(package.size)}"
-            )
-            details += f"<br>{metadata}<br>SHA-256：{package.digest}"
+            details += f"<br>{size_text(self.package.size)}"
         self.package_label.setToolTip(f"<qt>{details}</qt>" if details else "")
         is_nas_package = self.selected_nas is not None
         self.download_button.setText("下载" if self.package is None else "重新下载")
@@ -612,9 +608,9 @@ class MainWindow(QMainWindow):
         def work(log, progress):
             log("从 NAS 下载：" + entry.name)
             path = self.nas.download(entry, lambda done, total: progress(int(done * 100 / max(total, 1))))
-            return DebPackage.inspect(path)
+            return DebPackage.from_path(path)
 
-        self.start_job("下载并校验 DEB…", work, done)
+        self.start_job("下载 DEB…", work, done)
 
     def browse_local(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -629,12 +625,12 @@ class MainWindow(QMainWindow):
         self.clear_package_selection()
         self.selected_path = Path(path)
         self.update_package_selection()
-        self.start_job("解析安装包…", lambda *_: DebPackage.inspect(path), self.package_ready)
+        self.start_job("读取文件信息…", lambda *_: DebPackage.from_path(path), self.package_ready)
 
     def package_ready(self, package):
         self.package = package
         self.update_package_selection()
-        self.task_status.setText("安装包校验完成，可以部署")
+        self.task_status.setText("安装包已就绪")
         self.progress.setValue(100)
 
     def robot_job(self, config, action):
@@ -686,7 +682,7 @@ class MainWindow(QMainWindow):
 
     def deploy_package(self, config, package):
         self.log(f"部署目标：{config.host} / {config.generation} / {config.service}")
-        self.log(f"安装包：{package.name} {package.version} ({package.architecture})")
+        self.log(f"安装包：{package.path.name}")
 
         def done(task_id):
             self.task_status.setText("部署成功 · 服务已设置开机自启并运行正常")
@@ -694,7 +690,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "部署成功",
-                f"{package.name} {package.version}\n{config.service} 已自启并持续运行 10 秒。",
+                f"{package.path.name}\n{config.service} 已自启并持续运行 10 秒。",
             )
 
         self.start_job(

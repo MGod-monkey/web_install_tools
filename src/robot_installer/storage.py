@@ -29,8 +29,8 @@ class History:
                     robot.username,
                     robot.port,
                     robot.service,
-                    package.name,
-                    package.version,
+                    package.path.name,
+                    "",
                     "准备中",
                     "",
                 ),
@@ -39,6 +39,10 @@ class History:
     def update(self, task_id, state, detail=""):
         with self._connection() as db:
             db.execute("UPDATE tasks SET state=?, detail=? WHERE id=?", (state, detail, task_id))
+
+    def set_package(self, task_id, name, version):
+        with self._connection() as db:
+            db.execute("UPDATE tasks SET package=?, version=? WHERE id=?", (name, version, task_id))
 
     def recent(self):
         with self._connection() as db:

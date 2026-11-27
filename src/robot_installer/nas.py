@@ -3,8 +3,7 @@
 from dataclasses import dataclass
 import hashlib
 import json
-from pathlib import Path, PurePosixPath
-from tempfile import TemporaryDirectory
+from pathlib import PurePosixPath
 import threading
 
 import requests
@@ -217,26 +216,22 @@ class NasClient:
                         raise NasError("NAS 下载被拒绝，请刷新目录后重试")
                     total = int(response.headers.get("Content-Length", "0"))
                     done = 0
+                    digest = hashlib.sha256()
                     with partial.open("wb") as output:
                         for block in response.iter_content(1024 * 1024):
                             output.write(block)
+                            digest.update(block)
                             done += len(block)
                             progress(done, total or entry.size)
                 if (total and done != total) or (entry.size and done != entry.size):
                     raise NasError("下载大小不匹配，文件未加入缓存")
-                from .packages import DebPackage
-
-                with TemporaryDirectory(prefix=".verify-", dir=folder) as staging:
-                    candidate = Path(staging) / entry.name
-                    partial.replace(candidate)
-                    package = DebPackage.inspect(candidate)
-                    package.path.replace(dest)
+                partial.replace(dest)
                 (folder / "metadata.json").write_text(
                     json.dumps(
                         {
                             "path": entry.path,
                             "name": entry.name,
-                            "sha256": package.digest,
+                            "sha256": digest.hexdigest(),
                         },
                         ensure_ascii=False,
                     ),
