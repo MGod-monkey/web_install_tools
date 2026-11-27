@@ -7,8 +7,6 @@ umask 022
 task_dir=$1
 service=$2
 expected_hash=$3
-expected_package=$4
-expected_version=$5
 case "$service" in webservice.service|nerva-web.service) ;; *) exit 64 ;; esac
 [[ "$task_dir" =~ ^/var/lib/robot-web-installer/tasks/[a-f0-9]{32}$ ]] || exit 64
 [[ "$expected_hash" =~ ^[a-f0-9]{64}$ ]] || exit 64
@@ -49,17 +47,37 @@ printf '%s  package.deb\n' "$expected_hash" | sha256sum --check --status
 actual_package=$(dpkg-deb -f package.deb Package)
 actual_version=$(dpkg-deb -f package.deb Version)
 actual_arch=$(dpkg-deb -f package.deb Architecture)
-test "$actual_package" = "$expected_package"
-test "$actual_version" = "$expected_version"
-test "$actual_arch" = all || test "$actual_arch" = "$(dpkg --print-architecture)"
+[[ "$actual_package" =~ ^[a-z0-9][a-z0-9+.-]+$ ]]
+dpkg --validate-version "$actual_version"
+printf 'package=%s\nversion=%s\nservice=%s\n' "$actual_package" "$actual_version" "$service" > metadata.tmp
+mv metadata.tmp metadata
+echo "安装包：$actual_package $actual_version ($actual_arch)"
+robot_arch=$(dpkg --print-architecture)
+if [ "$actual_arch" != all ] && [ "$actual_arch" != "$robot_arch" ]; then
+    echo "架构不匹配：安装包是 $actual_arch，机器人是 $robot_arch"
+    false
+fi
+installed_kib=$(dpkg-deb -f package.deb Installed-Size)
+installed_kib=${installed_kib:-0}
+[[ "$installed_kib" =~ ^[0-9]{1,12}$ ]]
+package_size=$(stat -c %s package.deb)
+available=$(df -PB1 /var /tmp | awk 'NR>1 && (min=="" || $4<min) {min=$4} END {print min}')
+if (( available < package_size + 10#$installed_kib * 1024 )); then
+    echo '机器人 /var 或 /tmp 剩余空间不足'
+    false
+fi
+installed_version=$(dpkg-query -W -f='${Version}' "$actual_package" 2>/dev/null || true)
+if [ -n "$installed_version" ] && dpkg --compare-versions "$actual_version" lt "$installed_version"; then
+    echo "所选版本 $actual_version 低于已装版本 $installed_version，请使用正式升级包"
+    false
+fi
 audit=$(dpkg --audit)
 if [ -n "$audit" ]; then
     echo "$audit"
     echo '包管理器有未完成任务，请维护后重试'
     false
 fi
-printf 'package=%s\nversion=%s\nservice=%s\n' "$actual_package" "$actual_version" "$service" > metadata
-dpkg-query -W -f='${Version}\n' "$actual_package" > previous-version 2>/dev/null || true
+printf '%s\n' "$installed_version" > previous-version
 systemctl is-enabled "$service" > previous-enabled 2>/dev/null || true
 systemctl is-active "$service" > previous-active 2>/dev/null || true
 # Back up dpkg-managed /etc conffiles only. Application data needs a product-specific policy.
@@ -85,7 +103,7 @@ stage=install
 apt-get "${apt_options[@]}" -o Dpkg::Options::=--force-confold \
     --yes --reinstall install "$task_dir/package.deb"
 test "$(dpkg-query -W -f='${Status}' "$actual_package")" = 'install ok installed'
-test "$(dpkg-query -W -f='${Version}' "$actual_package")" = "$expected_version"
+test "$(dpkg-query -W -f='${Version}' "$actual_package")" = "$actual_version"
 echo '[80%] 设置开机自启并重启服务'
 write_status 'running:service'
 stage=service
