@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+app_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+export FONTCONFIG_FILE="$app_root/usr/share/robot-web-installer/fonts.conf"
+exec "$app_root/usr/bin/robot-web-installer" "$@"

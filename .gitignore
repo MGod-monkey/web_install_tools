@@ -1,0 +1,33 @@
+# Python environments, bytecode, and tool caches
+.venv/
+/venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.coverage
+/htmlcov/
+
+# Build outputs, packages, and extracted AppImages
+/build/
+/dist/
+/*.spec
+*.AppDir/
+squashfs-root/
+*.AppImage
+*.AppImage.sha256
+*.deb
+*.deb.sha256
+*.whl
+
+# Local research, validation artifacts, and environment files
+/.research/
+/artifacts/
+*.log
+.env
+.env.*
+!.env.example
+!.env.sample
+
+/test/

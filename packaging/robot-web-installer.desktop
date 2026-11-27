@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Robot Web Installer
+Name[zh_CN]=机器人 Web 部署工具
+Comment=Install Web DEB packages on a robot over SSH
+Exec=robot-web-installer
+Icon=robot-web-installer
+Terminal=false
+Categories=Utility;System;
+StartupWMClass=RobotWebInstaller
